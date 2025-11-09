@@ -1,0 +1,174 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      # init SQL scripts placed here are executed only when the DB data directory is empty
+      - ./db-init:/docker-entrypoint-initdb.d:ro
+      - postgres_data:/var/lib/postgresql/data
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0.4
+    command: ["start-dev"]
+    restart: always
+    environment:
+      KC_DB: postgres
+      KC_DB_URL_HOST: postgres
+      KC_DB_URL_DATABASE: keycloak
+      KC_DB_SCHEMA: public
+      KC_DB_USERNAME: postgres
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      KC_HOSTNAME: keycloak
+      KC_HTTP_ENABLED: "true"
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      # For compatibility with some Keycloak messages/scripts that look for these env vars
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN_USERNAME}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+    ports:
+      - 8081:8080
+    depends_on:
+      - postgres
+
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:latest
+    restart: always
+    # Use explicit command flags so we can run in local HTTP/dev mode and avoid TLS requirements
+    command: [
+      "--skip-oidc-discovery",
+      "--oidc-issuer-url=http://keycloak:8080/realms/authority-portal",
+      "--oidc-jwks-url=http://keycloak:8080/realms/authority-portal/protocol/openid-connect/certs",
+      "--client-id=oauth2-proxy",
+      "--client-secret=${OAUTH2_PROXY_CLIENT_SECRET}",
+      "--cookie-secret=${OAUTH2_PROXY_COOKIE_SECRET}",
+      "--http-address=0.0.0.0:8080",
+      "--cookie-secure=false"
+    ]
+    environment:
+      # Minimal env helpers; main runtime flags are passed via `command` above
+      OAUTH2_PROXY_EMAIL_DOMAINS: "*"
+      OAUTH2_PROXY_UPSTREAMS: http://backend:8080/
+      OAUTH2_PROXY_API_ROUTES: "^/api/"
+      OAUTH2_PROXY_SKIP_AUTH_ROUTES: "^(/oauth2|/api/registration|/api/config)"
+      OAUTH2_PROXY_PASS_ACCESS_TOKEN: "true"
+      OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
+      OAUTH2_PROXY_SHOW_DEBUG_ON_ERROR: "true"
+      OAUTH2_PROXY_REDIRECT_URL: http://localhost/oauth2/callback
+      OAUTH2_PROXY_SCOPE: openid profile
+    ports:
+      - 4180:8080
+    depends_on:
+      - keycloak
+      - backend
+
+  caddy:
+    image: caddy:2.7
+    restart: always
+    ports:
+      - 80:80
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - frontend
+      - oauth2-proxy
+
+  backend:
+    image: ghcr.io/takuma-8trees/authority-portal-backend:latest
+    restart: always
+    environment:
+      # Database (Quarkus env var format)
+      QUARKUS_DATASOURCE_JDBC_URL: "jdbc:postgresql://postgres/authority_portal"
+      QUARKUS_DATASOURCE_USERNAME: postgres
+      QUARKUS_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+
+      # Keycloak (Quarkus / OIDC)
+      QUARKUS_OIDC_AUTH_SERVER_URL: "http://keycloak:8080/realms/authority-portal"
+
+      # Keycloak admin client for realm-management tasks (Quarkus env var format)
+      QUARKUS_KEYCLOAK_ADMIN_CLIENT_SERVER_URL: "http://keycloak:8080"
+      QUARKUS_KEYCLOAK_ADMIN_CLIENT_REALM: "authority-portal"
+      QUARKUS_KEYCLOAK_ADMIN_CLIENT_CLIENT_ID: "authority-portal-client"
+      QUARKUS_KEYCLOAK_ADMIN_CLIENT_CLIENT_SECRET: ${AP_CLIENT_SECRET}
+      QUARKUS_KEYCLOAK_ADMIN_CLIENT_GRANT_TYPE: "CLIENT_CREDENTIALS"
+
+      # Base URL used by the application (mapped from authority-portal.base-url)
+      AUTHORITY_PORTAL_BASE_URL: "http://localhost"
+      
+      # API key to protect config endpoints (mapped from authority-portal.config.api-key)
+      AUTHORITY_PORTAL_CONFIG_API_KEY: ${AP_CONFIG_API_KEY}
+      AUTHORITY_PORTAL_DEPLOYMENT_ENVIRONMENTS_TEST_TITLE: "Test"
+      
+      # Additional required properties for Authority Portal (using Quarkus env var convention)
+      AUTHORITY_PORTAL_INVITATION_EXPIRATION: "43200"
+      AUTHORITY_PORTAL_CAAS_SOVITY_LIMIT_PER_ORGANIZATION: "1"
+      AUTHORITY_PORTAL_CAAS_SOVITY_URL: "http://localhost:8080"
+    depends_on:
+      - postgres
+      - keycloak
+
+  frontend:
+    image: ghcr.io/takuma-8trees/authority-portal-frontend:latest
+    restart: always
+    environment:
+      AUTHORITY_PORTAL_FRONTEND_BACKEND_URL: http://localhost
+      AUTHORITY_PORTAL_FRONTEND_LOGIN_URL: http://localhost/oauth2/start?rd=http%3A%2F%2Flocalhost
+      AUTHORITY_PORTAL_FRONTEND_LOGOUT_URL: http://localhost/oauth2/sign_out?rd=http%3A%2F%2Flocalhost%2F
+      AUTHORITY_PORTAL_FRONTEND_INVALIDATE_SESSION_COOKIES_URL: http://localhost/oauth2/sign_out
+      AUTHORITY_PORTAL_FRONTEND_LEGAL_NOTICE_URL: https://example.com/legal
+      AUTHORITY_PORTAL_FRONTEND_PRIVACY_POLICY_URL: https://example.com/privacy
+      AUTHORITY_PORTAL_FRONTEND_SUPPORT_URL: https://example.com/support
+      AUTHORITY_PORTAL_FRONTEND_ACTIVE_PROFILE: sovity-open-source
+      AUTHORITY_PORTAL_FRONTEND_DATASPACE_SHORT_NAME: ExDS
+      AUTHORITY_PORTAL_FRONTEND_PORTAL_DISPLAY_NAME: "Data Space Portal (local)"
+      AUTHORITY_PORTAL_FRONTEND_ENABLE_DASHBOARD: "true"
+      AUTHORITY_PORTAL_FRONTEND_UPDATE_PASSWORD_URL: http://keycloak:8080/realms/authority-portal/protocol/openid-connect/auth?response_type=code&client_id=oauth2-proxy&scope=openid&kc_action=UPDATE_PASSWORD&redirect_uri=http%3A%2F%2Flocalhost%2Foauth2%2Fcallback
+    depends_on:
+      - oauth2-proxy
+
+  catalog_crawler:
+    image: ghcr.io/sovity/authority-portal-crawler:latest
+    restart: unless-stopped
+    environment:
+      # Crawler basic configuration (adjust as needed)
+      MY_EDC_FQDN: "crawler.local"
+      CRAWLER_ENVIRONMENT_ID: test
+      # Point to the same DB used by the backend (adjust DB name if you prefer a separate DB)
+      CRAWLER_DB_JDBC_URL: "jdbc:postgresql://postgres/authority_portal"
+      CRAWLER_DB_JDBC_USER: postgres
+      CRAWLER_DB_JDBC_PASSWORD: ${POSTGRES_PASSWORD}
+      # Minimal OAuth / DAPS settings (for local testing you may not have a valid SKI/AKI)
+      edc.oauth.token.url: 'http://keycloak:8080/realms/authority-portal/protocol/openid-connect/token'
+      edc.oauth.provider.jwks.url: 'http://keycloak:8080/realms/authority-portal/protocol/openid-connect/certs'
+      edc.oauth.client.id: '${CRAWLER_EDC_CLIENT_ID}'
+      # If you want the crawler to report metrics/status on a port, expose it
+    ports:
+      - 11003:11003
+    depends_on:
+      - postgres
+      - keycloak
+
+    # Disabled by default on local arm64 hosts because published images are amd64-only
+    # Start it explicitly with `docker compose --profile crawler up` if you have a compatible image.
+    profiles: ["disabled"]
+
+  logging_house:
+    # Replace the http-echo stub with a multi-arch friendly lightweight hello server
+    image: nginxdemos/hello:latest
+    restart: unless-stopped
+    ports:
+      - 9200:80
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+
+networks:
+  default:
+    name: ds-portal-local
+    driver: bridge

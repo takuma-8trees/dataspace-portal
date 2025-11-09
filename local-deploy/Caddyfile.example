@@ -1,0 +1,34 @@
+# Caddyfile.example
+# Example Caddy configuration for production (Let's Encrypt) and notes for mkcert-based local testing.
+
+# Replace `portal.example.com` and `keycloak.example.com` with your actual public hostnames.
+portal.example.com {
+    # Serve frontend (assumes frontend listens on :80 internally)
+    reverse_proxy /* frontend:80 {
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-Host {host}
+        header_up X-Forwarded-For {remote}
+    }
+
+    # oauth2-proxy endpoints (path prefix) - route to oauth2-proxy service
+    route /oauth2/* {
+        reverse_proxy oauth2-proxy:8080
+    }
+}
+
+# Keycloak public hostname (served by Caddy)
+keycloak.example.com {
+    reverse_proxy /* keycloak:8080 {
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-Host {host}
+        header_up X-Forwarded-For {remote}
+    }
+}
+
+# Notes:
+# - By default Caddy will obtain TLS certificates from Let's Encrypt for the defined hostnames.
+# - Ensure DNS for portal.example.com and keycloak.example.com points to the host running Caddy.
+# - For local development you can replace the site blocks with hostnames like keycloak.local and portal.local,
+#   generate certs with mkcert, add those certs to Caddy (see Caddy docs), and add /etc/hosts entries.
+# - When terminating TLS at Caddy, set KC_HOSTNAME in Keycloak to the public hostname and configure
+#   oauth2-proxy to use the https issuer URL (https://keycloak.example.com/realms/authority-portal).

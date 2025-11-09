@@ -1,0 +1,108 @@
+# docker-compose.yml.example
+# Production-oriented example showing Caddy (TLS), Keycloak, oauth2-proxy, Postgres, backend and frontend.
+# This is a template — replace domain names, secret values and images as required.
+
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Optionally mount DB init SQL here
+    networks:
+      - ds-portal
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0.4
+    environment:
+      # Use the external public hostname (Caddy will terminate TLS)
+      KC_HOSTNAME: ${KC_HOSTNAME}
+      # DB config
+      KC_DB: postgres
+      KC_DB_URL_HOST: postgres
+      KC_DB_USERNAME: ${POSTGRES_USER:-postgres}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      # Admin user
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN_USERNAME}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+    depends_on:
+      - postgres
+    networks:
+      - ds-portal
+
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:latest
+    command:
+      - --oidc-issuer-url=https://${KC_HOSTNAME}/realms/authority-portal
+      - --client-id=oauth2-proxy
+      - --client-secret=${OAUTH2_PROXY_CLIENT_SECRET}
+      - --cookie-secret=${OAUTH2_PROXY_COOKIE_SECRET}
+      - --cookie-secure=true
+      - --http-address=0.0.0.0:8080
+      - --upstream=http://frontend:80/
+      - --redirect-url=https://${PORTAL_HOSTNAME:-portal.example.com}/oauth2/callback
+    environment:
+      OAUTH2_PROXY_COOKIE_SECRET: ${OAUTH2_PROXY_COOKIE_SECRET}
+    networks:
+      - ds-portal
+
+  caddy:
+    image: caddy:2.7
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - oauth2-proxy
+      - frontend
+    networks:
+      - ds-portal
+
+  frontend:
+    image: ghcr.io/sovity/authority-portal-frontend:latest
+    # Or build locally for your architecture:
+    # build: ../authority-portal-frontend
+    environment:
+      # Example envs consumed by the frontend; replace as needed
+      AP_API_BASE_URL: https://${PORTAL_HOSTNAME:-portal.example.com}/api
+    networks:
+      - ds-portal
+
+  backend:
+    image: ghcr.io/sovity/authority-portal-backend:latest
+    # Or build locally for your architecture:
+    # build: ../authority-portal-backend
+    environment:
+      QUARKUS_DATASOURCE_JDBC_URL: jdbc:postgresql://postgres:5432/authority_portal
+      QUARKUS_DATASOURCE_USERNAME: ${POSTGRES_USER:-postgres}
+      QUARKUS_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      AP_CLIENT_SECRET: ${AP_CLIENT_SECRET}
+      AP_CONFIG_API_KEY: ${AP_CONFIG_API_KEY}
+    depends_on:
+      - postgres
+    networks:
+      - ds-portal
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  ds-portal:
+    driver: bridge
+
+# Notes:
+# - Fill in .env values (POSTGRES_PASSWORD, KEYCLOAK_ADMIN_USERNAME, KEYCLOAK_ADMIN_PASSWORD,
+#   OAUTH2_PROXY_COOKIE_SECRET, OAUTH2_PROXY_CLIENT_SECRET, AP_CLIENT_SECRET, KC_HOSTNAME, PORTAL_HOSTNAME).
+# - Keycloak must be reachable at the public hostname used in KC_HOSTNAME so oauth2-proxy discovery works over HTTPS.
+# - For local development where you want to use mkcert, set KC_HOSTNAME and PORTAL_HOSTNAME to local hostnames
+#   (e.g. keycloak.local / portal.local), generate locally trusted certs with mkcert and mount them into Caddy.
+# - If your host is arm64 and the images are amd64, either build arm64 images locally or enable QEMU/binfmt emulation.
