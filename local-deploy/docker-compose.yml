@@ -80,6 +80,8 @@ services:
   backend:
     image: ghcr.io/takuma-8trees/authority-portal-backend:latest
     restart: always
+    volumes:
+      - ./config/application.properties:/deployments/config/application.properties:ro
     environment:
       # Database (Quarkus env var format)
       QUARKUS_DATASOURCE_JDBC_URL: "jdbc:postgresql://postgres/authority_portal"
@@ -101,12 +103,26 @@ services:
       
       # API key to protect config endpoints (mapped from authority-portal.config.api-key)
       AUTHORITY_PORTAL_CONFIG_API_KEY: ${AP_CONFIG_API_KEY}
-      AUTHORITY_PORTAL_DEPLOYMENT_ENVIRONMENTS_TEST_TITLE: "Test"
       
       # Additional required properties for Authority Portal (using Quarkus env var convention)
       AUTHORITY_PORTAL_INVITATION_EXPIRATION: "43200"
       AUTHORITY_PORTAL_CAAS_SOVITY_LIMIT_PER_ORGANIZATION: "1"
       AUTHORITY_PORTAL_CAAS_SOVITY_URL: "http://localhost:8080"
+      
+      # Test Environment Configuration (required)
+      AUTHORITY_PORTAL_DEPLOYMENT_ENVIRONMENTS_TEST_TITLE: "Test Environment"
+      AUTHORITY_PORTAL_DEPLOYMENT_ENVIRONMENTS_TEST_POSITION: "0"
+      
+      # Test Environment Data Catalog Settings
+      AUTHORITY_PORTAL_DEPLOYMENT_ENVIRONMENTS_TEST_DATA_CATALOG_DATASPACE_NAMES_DEFAULT: "TestDataspace"
+      AUTHORITY_PORTAL_DEPLOYMENT_ENVIRONMENTS_TEST_DATA_CATALOG_HIDE_OFFLINE_DATA_OFFERS_AFTER: "15m"
+      AUTHORITY_PORTAL_DEPLOYMENT_ENVIRONMENTS_TEST_DATA_CATALOG_CATALOG_PAGE_PAGE_SIZE: "10"
+      
+      # Test Environment DAPS Configuration
+      AUTHORITY_PORTAL_DEPLOYMENT_ENVIRONMENTS_TEST_DAPS_URL: "http://keycloak:8080"
+      AUTHORITY_PORTAL_DEPLOYMENT_ENVIRONMENTS_TEST_DAPS_REALM_NAME: "authority-portal"
+      AUTHORITY_PORTAL_DEPLOYMENT_ENVIRONMENTS_TEST_DAPS_CLIENT_ID: "authority-portal-client"
+      AUTHORITY_PORTAL_DEPLOYMENT_ENVIRONMENTS_TEST_DAPS_CLIENT_SECRET: ${AP_CLIENT_SECRET}
     depends_on:
       - postgres
       - keycloak
